@@ -3,7 +3,9 @@
 //
 // Expects a <form id="quote-form"> with fields named:
 // name, email, phone, zipCode, message, quoteItems
-// and an optional error container: <div id="quote-form-error"></div>
+// quoteItems must already hold the cart array serialized via JSON.stringify(...)
+// (this script forwards the string as-is, it does not build the cart itself).
+// Optional error container: <div id="quote-form-error"></div>
 (function () {
   const API_BASE_URL = 'https://your-api-domain.com'; // TODO: set your deployed API URL
 

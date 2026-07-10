@@ -22,4 +22,5 @@ export const config = {
     .filter(Boolean),
   minQuoteTotal: Number(process.env.MIN_QUOTE_TOTAL) || 1,
   maxQuoteTotal: Number(process.env.MAX_QUOTE_TOTAL) || 1_000_000,
+  maxQuoteItems: Number(process.env.MAX_QUOTE_ITEMS) || 50,
 };

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import { stripe } from '../stripeClient.js';
 import { config } from '../config.js';
-import { parseTotalFromQuoteItems } from '../utils/parseTotal.js';
+import { parseQuoteItems, sumQuoteTotal } from '../utils/parseQuoteItems.js';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000;
@@ -20,13 +20,18 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'email is not a valid email address' });
   }
 
-  const total = parseTotalFromQuoteItems(quoteItems);
-  if (total === null) {
-    return res
-      .status(400)
-      .json({ error: 'Could not find a valid "Estimated total: $..." line in quoteItems' });
+  const items = parseQuoteItems(quoteItems);
+  if (!items) {
+    return res.status(400).json({
+      error: 'quoteItems must be a JSON-encoded array of line items with name, price, and qty',
+    });
   }
 
+  if (items.length > config.maxQuoteItems) {
+    return res.status(400).json({ error: 'Too many items in quoteItems' });
+  }
+
+  const total = sumQuoteTotal(items);
   if (total < config.minQuoteTotal || total > config.maxQuoteTotal) {
     return res.status(400).json({ error: 'Quote total is outside the allowed range' });
   }
@@ -37,7 +42,7 @@ router.post('/', async (req, res) => {
     const idempotencyBucket = Math.floor(Date.now() / IDEMPOTENCY_WINDOW_MS);
     const idempotencyKey = crypto
       .createHash('sha256')
-      .update(`${email}|${total}|${idempotencyBucket}`)
+      .update(`${email}|${total}|${items.length}|${idempotencyBucket}`)
       .digest('hex');
 
     const session = await stripe.checkout.sessions.create(
@@ -46,25 +51,26 @@ router.post('/', async (req, res) => {
         customer_email: email,
         success_url: config.successUrl,
         cancel_url: config.cancelUrl,
-        line_items: [
-          {
-            quantity: 1,
-            price_data: {
-              currency: 'usd',
-              unit_amount: Math.round(total * 100),
-              product_data: {
-                name: 'Estimated Quote',
-                description: String(quoteItems).slice(0, 500),
-              },
+        line_items: items.map((item) => ({
+          quantity: item.qty,
+          price_data: {
+            currency: 'usd',
+            unit_amount: Math.round(item.price * 100),
+            product_data: {
+              name: item.name.slice(0, 500),
+              ...(item.desc ? { description: item.desc.slice(0, 500) } : {}),
+              ...(item.img ? { images: [item.img] } : {}),
             },
           },
-        ],
+        })),
         metadata: {
           name: String(name).slice(0, 500),
           phone: String(phone || '').slice(0, 500),
           zipCode: String(zipCode || '').slice(0, 500),
           message: String(message || '').slice(0, 500),
           pageUrl: String(pageUrl || '').slice(0, 500),
+          itemCount: String(items.length),
+          total: String(total),
         },
       },
       { idempotencyKey },
