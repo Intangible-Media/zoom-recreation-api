@@ -47,6 +47,17 @@
     }
   }
 
+  function collectDeviceInfo() {
+    return {
+      userAgent: navigator.userAgent || '',
+      platform: navigator.platform || '',
+      language: navigator.language || '',
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      screen: `${screen.width}x${screen.height}`,
+      viewport: `${window.innerWidth}x${window.innerHeight}`,
+    };
+  }
+
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     clearError();
@@ -61,6 +72,7 @@
       message: formData.get('message') || '',
       quoteItems: formData.get('quoteItems') || '',
       pageUrl: window.location.href,
+      device: collectDeviceInfo(),
     };
 
     try {

@@ -8,9 +8,11 @@
   },
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "hubspot:setup": "node scripts/setup-hubspot-properties.js"
   },
   "dependencies": {
+    "@hubspot/api-client": "^14.0.1",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

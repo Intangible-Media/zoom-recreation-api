@@ -5,11 +5,21 @@ import rateLimit from 'express-rate-limit';
 import { config } from './src/config.js';
 import healthRouter from './src/routes/health.js';
 import checkoutRouter from './src/routes/checkout.js';
+import stripeWebhookRouter from './src/routes/stripeWebhook.js';
 
 const app = express();
 
+// Deployed behind a single reverse proxy (Render/Railway/Fly.io) — needed so
+// req.ip and express-rate-limit see the real client IP instead of the proxy's.
+app.set('trust proxy', 1);
+
 // CORS_ORIGIN is required (see src/config.js), so unknown origins are denied by default.
 app.use(cors({ origin: config.corsOrigins }));
+
+// Must be mounted with the raw body, and before express.json() below, because
+// Stripe's signature verification needs the exact unparsed request bytes.
+app.use('/api/webhooks/stripe', express.raw({ type: 'application/json' }), stripeWebhookRouter);
+
 app.use(express.json());
 
 const checkoutLimiter = rateLimit({
