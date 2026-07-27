@@ -18,6 +18,7 @@ export const DEPOSIT_STATUS = {
   PAID: 'paid',
   EXPIRED: 'expired',
   FAILED: 'failed',
+  NO_DEPOSIT: 'no_deposit',
 };
 
 export const CUSTOM_PROPERTY_DEFINITIONS = {
@@ -58,6 +59,7 @@ export const CUSTOM_PROPERTY_DEFINITIONS = {
         { label: 'Paid', value: DEPOSIT_STATUS.PAID, displayOrder: 1, hidden: false },
         { label: 'Expired', value: DEPOSIT_STATUS.EXPIRED, displayOrder: 2, hidden: false },
         { label: 'Failed', value: DEPOSIT_STATUS.FAILED, displayOrder: 3, hidden: false },
+        { label: 'No Deposit', value: DEPOSIT_STATUS.NO_DEPOSIT, displayOrder: 4, hidden: false },
       ],
     },
     {

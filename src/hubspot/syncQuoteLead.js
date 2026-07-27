@@ -1,6 +1,6 @@
 import { upsertContact } from './contacts.js';
 import { createDeal, setDealStripeSession } from './deals.js';
-import { CONTACT_PROPERTIES } from './properties.js';
+import { CONTACT_PROPERTIES, DEPOSIT_STATUS } from './properties.js';
 import { parseDevice } from '../utils/parseDevice.js';
 import { sanitizeText, safeStringify } from '../utils/sanitizeText.js';
 
@@ -43,6 +43,7 @@ export async function syncQuoteLead({
   deviceRaw,
   serverUserAgent,
   ip,
+  depositStatus = DEPOSIT_STATUS.PENDING,
 }) {
   const safeName = sanitizeText(name, 255);
   const { firstname, lastname } = splitName(safeName || 'Unknown');
@@ -64,6 +65,7 @@ export async function syncQuoteLead({
     amount: total,
     contactId,
     quoteItemsJson: safeStringify(items, MAX_QUOTE_ITEMS_JSON_LEN),
+    depositStatus,
   });
 
   return { contactId, dealId };
