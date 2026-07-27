@@ -50,6 +50,7 @@ async function buildReceiptItems(session, dealId) {
           lineTotal: item.price * item.qty,
           desc: item.desc || undefined,
           note: item.price === 0 ? NO_DEPOSIT_NOTE : undefined,
+          img: item.img || undefined,
         }));
       }
     } catch (err) {
@@ -59,8 +60,13 @@ async function buildReceiptItems(session, dealId) {
 
   // Stripe's own max page size is 100; bounded further by maxQuoteItems since a
   // legitimate session never has more line items than checkout.js allowed it to.
+  // expand pulls each line item's product (checkout.js sets product_data.images
+  // to the original item's img), so this fallback path can still show thumbnails.
   const lineItemLimit = Math.min(config.maxQuoteItems, 100);
-  const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: lineItemLimit });
+  const lineItems = await stripe.checkout.sessions.listLineItems(session.id, {
+    limit: lineItemLimit,
+    expand: ['data.price.product'],
+  });
   if (lineItems.has_more) {
     console.error(
       `Session ${session.id} has more than ${lineItemLimit} line items — receipt email will be incomplete`,
@@ -75,6 +81,7 @@ async function buildReceiptItems(session, dealId) {
     // display) avoids a rounding round-trip when a line's amount doesn't divide
     // evenly by its quantity.
     lineTotal: lineItem.amount_total / 100,
+    img: lineItem.price?.product?.images?.[0] || undefined,
   }));
 }
 

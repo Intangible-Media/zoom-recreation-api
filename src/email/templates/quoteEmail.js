@@ -20,6 +20,7 @@ export function buildQuoteEmail({ name, items, total }) {
     lineTotal: item.price * item.qty,
     desc: item.desc || undefined,
     note: item.price === 0 ? NO_PRICE_NOTE : undefined,
+    img: item.img || undefined,
   }));
 
   const html = renderEmailWrapperHtml(`
