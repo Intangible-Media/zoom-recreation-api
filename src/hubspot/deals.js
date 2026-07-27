@@ -2,12 +2,18 @@ import { AssociationTypes } from '@hubspot/api-client';
 import { hubspotClient } from './client.js';
 import { DEAL_PROPERTIES, DEPOSIT_STATUS } from './properties.js';
 
-export async function createDeal({ dealname, amount, contactId, quoteItemsJson }) {
+export async function createDeal({
+  dealname,
+  amount,
+  contactId,
+  quoteItemsJson,
+  depositStatus = DEPOSIT_STATUS.PENDING,
+}) {
   const deal = await hubspotClient.crm.deals.basicApi.create({
     properties: {
       dealname,
       amount: String(amount),
-      [DEAL_PROPERTIES.DEPOSIT_STATUS]: DEPOSIT_STATUS.PENDING,
+      [DEAL_PROPERTIES.DEPOSIT_STATUS]: depositStatus,
       [DEAL_PROPERTIES.QUOTE_ITEMS_JSON]: quoteItemsJson,
     },
     associations: [

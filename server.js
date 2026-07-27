@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { config } from './src/config.js';
 import healthRouter from './src/routes/health.js';
 import checkoutRouter from './src/routes/checkout.js';
+import emailQuoteRouter from './src/routes/emailQuote.js';
 import stripeWebhookRouter from './src/routes/stripeWebhook.js';
 
 const app = express();
@@ -29,8 +30,21 @@ const checkoutLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Separate (tighter) limiter from checkoutLimiter: /api/checkout leads to an actual
+// Stripe payment, which is naturally self-limiting; /api/quote/email has no such
+// friction and sends to a caller-supplied address, so it gets its own budget both to
+// curb abuse and so a burst of failed checkout attempts can't also lock a customer
+// out of this fallback.
+const emailQuoteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use('/health', healthRouter);
 app.use('/api/checkout', checkoutLimiter, checkoutRouter);
+app.use('/api/quote/email', emailQuoteLimiter, emailQuoteRouter);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' });
