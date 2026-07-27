@@ -43,3 +43,25 @@ export async function updateDepositStatus(dealId, status) {
     properties: { [DEAL_PROPERTIES.DEPOSIT_STATUS]: status },
   });
 }
+
+/**
+ * Returns the deal's full original cart (including any $0 quote-only items that
+ * were never sent to Stripe), or null if the deal has no cart stored or it can't
+ * be parsed. Used to build the payment receipt from the *complete* quote rather
+ * than just the priced items Stripe actually charged for.
+ */
+export async function getDealQuoteItems(dealId) {
+  const deal = await hubspotClient.crm.deals.basicApi.getById(dealId, [DEAL_PROPERTIES.QUOTE_ITEMS_JSON]);
+  const raw = deal.properties?.[DEAL_PROPERTIES.QUOTE_ITEMS_JSON];
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    // safeStringify() truncates with "...(truncated)" past MAX_QUOTE_ITEMS_JSON_LEN,
+    // which breaks JSON.parse for an oversized cart — callers fall back to Stripe's
+    // own line items instead of failing the receipt entirely.
+    return null;
+  }
+}

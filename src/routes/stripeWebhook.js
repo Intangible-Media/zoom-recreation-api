@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { stripe } from '../stripeClient.js';
 import { config } from '../config.js';
-import { updateDepositStatus } from '../hubspot/deals.js';
+import { updateDepositStatus, getDealQuoteItems } from '../hubspot/deals.js';
 import { DEPOSIT_STATUS } from '../hubspot/properties.js';
 import { sendReceiptEmail } from '../email/send.js';
 import { createIdempotencyCache } from '../utils/idempotencyCache.js';
@@ -17,6 +17,8 @@ const router = Router();
 const RECEIPT_DEDUPE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const sentReceipts = createIdempotencyCache(RECEIPT_DEDUPE_WINDOW_MS);
 
+const NO_DEPOSIT_NOTE = 'No deposit collected';
+
 // 'completed' can still mean payment_status 'unpaid' for async payment methods (e.g.
 // some bank debits) — those resolve later via async_payment_succeeded instead. Single
 // source of truth for "did this event represent a successful payment", used both to
@@ -28,20 +30,31 @@ function isPaidEvent(event, session) {
   );
 }
 
-// checkout.js only puts a handful of sanitized, length-capped fields into session
-// metadata (see metadata block there) — not the itemized cart or the customer's
-// email. Line items and the authoritative paid total are fetched fresh from Stripe;
-// the email comes off the session itself, which Checkout always populates.
-async function sendReceiptForSession(session) {
-  const to = session.customer_details?.email || session.customer_email;
-  if (!to) {
-    console.error(`No customer email on session ${session.id}, skipping receipt email`);
-    return;
-  }
-
-  if (session.amount_total == null) {
-    console.error(`No amount_total on session ${session.id}, skipping receipt email`);
-    return;
+/**
+ * Prefers the full original cart stored on the HubSpot deal (quote_items_json) —
+ * this includes $0 quote-only items that were never sent to Stripe at all (see
+ * checkout.js), so the receipt can show the customer's whole request, not just the
+ * items they were able to pay a deposit on. Falls back to Stripe's own line items
+ * (priced items only) if the deal/cart isn't available for any reason — e.g. the
+ * HubSpot sync failed back at checkout time and no dealId ever made it into the
+ * session's metadata.
+ */
+async function buildReceiptItems(session, dealId) {
+  if (dealId) {
+    try {
+      const cart = await getDealQuoteItems(dealId);
+      if (cart) {
+        return cart.map((item) => ({
+          name: item.name,
+          qty: item.qty,
+          lineTotal: item.price * item.qty,
+          desc: item.desc || undefined,
+          note: item.price === 0 ? NO_DEPOSIT_NOTE : undefined,
+        }));
+      }
+    } catch (err) {
+      console.error(`Failed to load full cart from HubSpot deal ${dealId} for receipt:`, err);
+    }
   }
 
   // Stripe's own max page size is 100; bounded further by maxQuoteItems since a
@@ -54,7 +67,7 @@ async function sendReceiptForSession(session) {
     );
   }
 
-  const items = lineItems.data.map((lineItem) => ({
+  return lineItems.data.map((lineItem) => ({
     name: lineItem.description || 'Item',
     qty: lineItem.quantity || 1,
     // amount_total is Stripe's exact line total; using it directly (rather than
@@ -63,6 +76,24 @@ async function sendReceiptForSession(session) {
     // evenly by its quantity.
     lineTotal: lineItem.amount_total / 100,
   }));
+}
+
+// checkout.js only puts a handful of sanitized, length-capped fields into session
+// metadata (see metadata block there) — not the customer's email. That comes off the
+// session itself, which Checkout always populates.
+async function sendReceiptForSession(session, dealId) {
+  const to = session.customer_details?.email || session.customer_email;
+  if (!to) {
+    console.error(`No customer email on session ${session.id}, skipping receipt email`);
+    return;
+  }
+
+  if (session.amount_total == null) {
+    console.error(`No amount_total on session ${session.id}, skipping receipt email`);
+    return;
+  }
+
+  const items = await buildReceiptItems(session, dealId);
 
   await sendReceiptEmail({
     to,
@@ -121,7 +152,7 @@ router.post('/', async (req, res) => {
   // the original HubSpot sync failed and no deal/metadata was ever attached.
   if (isPaidEvent(event, session) && !sentReceipts.get(event.id)) {
     try {
-      await sendReceiptForSession(session);
+      await sendReceiptForSession(session, dealId);
       sentReceipts.set(event.id, true);
     } catch (err) {
       console.error(`Failed to send receipt email for session ${session?.id}:`, err);

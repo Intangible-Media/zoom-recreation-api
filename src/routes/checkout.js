@@ -64,18 +64,26 @@ router.post('/', async (req, res) => {
         customer_email: email,
         success_url: config.successUrl,
         cancel_url: config.cancelUrl,
-        line_items: items.map((item) => ({
-          quantity: item.qty,
-          price_data: {
-            currency: 'usd',
-            unit_amount: Math.round(item.price * 100),
-            product_data: {
-              name: item.name.slice(0, 500),
-              ...(item.desc ? { description: item.desc.slice(0, 500) } : {}),
-              ...(item.img ? { images: [item.img] } : {}),
+        // Quote-only ($0) items are kept in HubSpot's quote_items_json (via
+        // syncQuoteLead below, which gets the full `items` array) and would appear
+        // on the emailed receipt, but Stripe rejects/mishandles $0 line items, and
+        // there's nothing to charge for them anyway — only priced items go to
+        // Stripe. `total >= config.minQuoteTotal` (checked above) guarantees at
+        // least one item survives this filter.
+        line_items: items
+          .filter((item) => item.price > 0)
+          .map((item) => ({
+            quantity: item.qty,
+            price_data: {
+              currency: 'usd',
+              unit_amount: Math.round(item.price * 100),
+              product_data: {
+                name: item.name.slice(0, 500),
+                ...(item.desc ? { description: item.desc.slice(0, 500) } : {}),
+                ...(item.img ? { images: [item.img] } : {}),
+              },
             },
-          },
-        })),
+          })),
         metadata: {
           name: sanitizeText(name, 500),
           phone: sanitizeText(phone, 500),

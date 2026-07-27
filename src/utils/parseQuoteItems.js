@@ -20,11 +20,17 @@ export function parseQuoteItems(quoteItemsRaw) {
     if (!item || typeof item !== 'object') return null;
 
     const name = typeof item.name === 'string' ? item.name.trim() : '';
-    const price = Number(item.price);
-    const qty = Number(item.qty);
-
     if (!name) return null;
-    if (!Number.isFinite(price) || price <= 0) return null;
+
+    // price === 0 is valid — quote-only line items (e.g. pricing pending a site
+    // review) still need to appear on the quote/receipt, just not charged via
+    // Stripe. Number(null)/Number(undefined) would otherwise coerce to 0/NaN, so
+    // null/undefined are rejected explicitly rather than relying on that coercion.
+    if (item.price === null || item.price === undefined) return null;
+    const price = Number(item.price);
+    if (!Number.isInteger(price) || price < 0) return null;
+
+    const qty = Number(item.qty);
     if (!Number.isInteger(qty) || qty <= 0) return null;
 
     parsed.push({

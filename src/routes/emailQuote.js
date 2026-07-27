@@ -19,7 +19,9 @@ const sentQuoteEmails = createIdempotencyCache(IDEMPOTENCY_WINDOW_MS);
 // which only runs after a successful send so a HubSpot outage never leaves behind a
 // deal that implies a quote email went out when it didn't.
 router.post('/', async (req, res) => {
-  const validation = validateQuoteRequest(req.body);
+  // Unlike /api/checkout, a cart made entirely of quote-only ($0) items is valid
+  // here — there's no payment involved either way.
+  const validation = validateQuoteRequest(req.body, { minTotal: 0 });
   if (validation.error) {
     return res.status(400).json({ error: validation.error });
   }

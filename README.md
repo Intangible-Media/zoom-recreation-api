@@ -2,6 +2,9 @@
 
 Minimal Express API that turns a Webflow quote form submission into a Stripe Checkout Session,
 and syncs the lead to HubSpot as a Contact + Deal so you can see whether they left a deposit.
+It can also email the customer their itemized quote directly with no payment involved
+([`POST /api/quote/email`](#post-apiquoteemail)), and automatically emails a receipt once a
+deposit is actually paid — both sent via [Resend](https://resend.com).
 
 ## Requirements
 
@@ -28,6 +31,8 @@ Fill in `.env`:
 | `MAX_QUOTE_TOTAL` | Optional. Highest accepted quote total in dollars (default `1000000`) |
 | `MAX_QUOTE_ITEMS` | Optional. Highest number of line items accepted in `quoteItems` (default `50`) |
 | `HUBSPOT_ACCESS_TOKEN` | HubSpot Service Key — see [Getting your HubSpot Service Key](#getting-your-hubspot-service-key) |
+| `RESEND_API_KEY` | Resend API key used to send quote/receipt emails — see [Getting your Resend API key](#getting-your-resend-api-key) |
+| `EMAIL_FROM` | "From" address for quote/receipt emails, e.g. `Zoom Rec <quotes@yourdomain.com>` — the domain must be verified in Resend |
 
 ### Getting your Stripe secret key
 
@@ -96,10 +101,26 @@ for new accounts, so skip anything with those names if you see them. The current
 5. Give the key a clear name (e.g. "Checkout HubSpot Sync") so it's identifiable later — not
    something generic or unrelated to what it's actually used for.
 6. Run `npm run hubspot:setup` once to create the custom properties this integration uses
-   (safe to re-run — it skips properties that already exist):
+   (safe to re-run — it creates anything missing, and backfills any new enum options onto a
+   property that already exists, e.g. if you set this up before `no_deposit` was added below):
    - Contact: `quote_message`, `quote_page_url`, `device_info`
-   - Deal: `deposit_status` (`pending`/`paid`/`expired`/`failed`), `stripe_checkout_session_id`,
-     `quote_items_json`
+   - Deal: `deposit_status` (`pending`/`paid`/`expired`/`failed`/`no_deposit`),
+     `stripe_checkout_session_id`, `quote_items_json`
+
+### Getting your Resend API key
+
+This app sends the quote-email and payment-receipt emails through
+[Resend](https://resend.com):
+
+1. Sign up / log in at https://resend.com.
+2. **Domains** → **Add Domain** → follow the DNS instructions to add the SPF/DKIM records at
+   your DNS provider, then wait for the domain to show **Verified** (usually minutes, sometimes
+   longer depending on DNS propagation). Sending from an unverified domain, or a personal address
+   like a Gmail account, will fail or land in spam.
+3. **API Keys** → **Create API Key** → name it (e.g. "Zoom Rec Checkout API") → copy the value
+   (starts with `re_...`) into `RESEND_API_KEY` in `.env`. Never commit this value.
+4. Set `EMAIL_FROM` to an address at that verified domain, optionally with a display name:
+   `Zoom Rec <quotes@yourdomain.com>`.
 
 ## Run locally
 
@@ -149,7 +170,7 @@ Webflow cart already builds). Each item needs at minimum:
 | Field | Required | Notes |
 | --- | --- | --- |
 | `name` | yes | Shown as the Stripe line item name |
-| `price` | yes | Whole dollars, e.g. `170914` for $170,914 |
+| `price` | yes | Whole dollars, e.g. `170914` for $170,914. `0` is allowed — see below |
 | `qty` | yes | Positive integer |
 | `desc` | no | Shown as the Stripe line item description |
 | `img` | no | Must be an `https://` URL to be passed through to Stripe |
@@ -158,6 +179,15 @@ Any other fields on each item (`id`, `sku`, `category`, `related-products`, etc.
 `name` and `email` are required, and the total (sum of `price × qty` across all items) must fall
 within `MIN_QUOTE_TOTAL`–`MAX_QUOTE_TOTAL`. One Stripe Checkout line item is created per cart
 item, so the customer sees an itemized breakdown at checkout.
+
+**`price: 0` — quote-only items.** Some line items (e.g. "pricing provided after a site
+review") don't have a firm price yet. Send them with `price: 0` and they'll still appear in the
+itemized quote/receipt email and in HubSpot's `quote_items_json` — with a "Price provided after
+review" note instead of "$0.00" — but they're excluded from what's actually sent to Stripe, since
+there's nothing to charge for them. A cart can mix `price: 0` and priced items freely. On
+`/api/checkout`, the *chargeable* total (sum across priced items only) must still meet
+`MIN_QUOTE_TOTAL`, so an all-`price: 0` cart is rejected there — use
+[`/api/quote/email`](#post-apiquoteemail) instead, which allows a total of `0`.
 
 Response:
 
@@ -172,6 +202,37 @@ Before creating the Stripe session, this endpoint also upserts a HubSpot Contact
 creates an associated Deal with `deposit_status` set to `pending`. If HubSpot is unreachable or
 misconfigured, this is logged and swallowed — the customer still gets a `checkoutUrl`.
 
+Rate-limited to 20 requests / 15 min per IP.
+
+### `POST /api/quote/email`
+
+Same request body as [`POST /api/checkout`](#post-apicheckout) above — same `quoteItems` shape,
+same validation rules (`name`/`email` required, item count within `MAX_QUOTE_ITEMS`), except the
+total may be as low as `0` here (still capped at `MAX_QUOTE_TOTAL`) — `/api/checkout` requires at
+least `MIN_QUOTE_TOTAL`, since it always charges something, while this route doesn't, so a cart
+made entirely of `price: 0` quote-only items is valid. Use this instead of `/api/checkout` when
+the customer wants the quote emailed to them without paying a deposit right now.
+
+Response on success:
+
+```json
+{ "ok": true }
+```
+
+Sending the email is the point of this request, so it happens first — if it fails you get back a
+`502` (`{"error":"Unable to send quote email"}`) and nothing else happens (no HubSpot record is
+created, so HubSpot never implies an email went out that didn't). Once the email sends
+successfully, a HubSpot Contact + Deal is created the same way `/api/checkout` does, except
+`deposit_status` is `no_deposit` instead of `pending` — best-effort, same as `/api/checkout`, since
+the email has already gone out by that point either way.
+
+A duplicate submission (same email/total/item-count) within 5 minutes returns `{ "ok": true }`
+without re-sending — protects against a double-click resending the email or creating a second
+HubSpot deal.
+
+Rate-limited to 5 requests / 15 min per IP — tighter than `/api/checkout`'s 20, since this route
+has no payment step to naturally throttle repeated use.
+
 ### `POST /api/webhooks/stripe`
 
 Stripe calls this directly — not meant to be called manually. Verifies the `Stripe-Signature`
@@ -185,10 +246,38 @@ the event:
 | `checkout.session.async_payment_failed` | `failed` |
 | `checkout.session.expired` | `expired` |
 
+Either `paid`-triggering row above also sends the customer an automatic receipt email via
+Resend, to the email address Stripe collected at Checkout. This doesn't require subscribing to
+any additional Stripe event — the two events that trigger it were already required for the
+HubSpot sync above.
+
+The receipt shows the **entire original cart**, not just what got charged: it's built from the
+HubSpot deal's `quote_items_json` (the full cart, including any `price: 0` quote-only items that
+were never sent to Stripe — see [`price: 0` — quote-only items](#post-apicheckout) above), so the
+customer can see both what they paid a deposit for and what still needs pricing, in one email.
+Items without a deposit are marked "No deposit collected" instead of showing an amount. If the
+deal/cart can't be loaded for any reason (e.g. the original HubSpot sync failed at checkout time),
+this falls back to Stripe's own line items instead — which only ever reflects the priced items, so
+in that fallback case any `price: 0` items simply won't appear.
+
 See [Getting your Stripe webhook secret](#getting-your-stripe-webhook-secret) above for exactly how
 to register this (both locally via the Stripe CLI, and in production via the Dashboard).
 
 ## Testing the API
+
+### Automated tests
+
+```bash
+npm test
+```
+
+Runs unit tests for the pure validation logic (`parseQuoteItems`, `validateQuoteRequest`) using
+Node's built-in test runner — no extra dependency, no network calls. Covers `price: 0` acceptance,
+still-rejected cases (`null`, `NaN`, non-integers, negatives, `qty: 0`), and the per-route total
+minimum (`/api/checkout` vs. `/api/quote/email`). This doesn't cover Stripe/HubSpot/Resend
+integration itself — use the manual curl/Postman flows below for that.
+
+### Manual testing
 
 With the server running (`npm run dev`), try it from another terminal:
 
@@ -209,10 +298,58 @@ curl -X POST http://localhost:3000/api/checkout \
 curl -X POST http://localhost:3000/api/checkout \
   -H "Content-Type: application/json" \
   -d '{"name": "Jane Doe", "email": "jane@example.com", "quoteItems": "not json"}'
+
+# Email the quote instead of paying a deposit
+curl -X POST http://localhost:3000/api/quote/email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "quoteItems": "[{\"name\":\"Rocket Ship\",\"price\":170914,\"qty\":2}]"
+  }'
+
+# Mixed cart on checkout -> 200; Stripe only sees the priced item, the $0 item
+# still appears on the emailed receipt (see POST /api/webhooks/stripe above)
+curl -X POST http://localhost:3000/api/checkout \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "quoteItems": "[{\"name\":\"Quote Only\",\"price\":0,\"qty\":1},{\"name\":\"Priced\",\"price\":42840,\"qty\":1}]"
+  }'
+
+# All quote-only ($0) items on /api/quote/email -> 200 { "ok": true }
+curl -X POST http://localhost:3000/api/quote/email \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "quoteItems": "[{\"name\":\"Quote Only\",\"price\":0,\"qty\":5}]"
+  }'
+
+# The same all-quote-only cart on /api/checkout -> 400, nothing to charge
+curl -X POST http://localhost:3000/api/checkout \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "quoteItems": "[{\"name\":\"Quote Only\",\"price\":0,\"qty\":5}]"
+  }'
+
+# Negative price is still rejected (only 0 became valid, not negatives) -> 400
+curl -X POST http://localhost:3000/api/checkout \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Jane Doe",
+    "email": "jane@example.com",
+    "quoteItems": "[{\"name\":\"Bad\",\"price\":-5,\"qty\":1}]"
+  }'
 ```
 
 A real checkout session requires a valid `STRIPE_SECRET_KEY` in `.env` — a placeholder key will
-fail with a Stripe authentication error.
+fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a valid
+`RESEND_API_KEY` and a verified `EMAIL_FROM` domain — a placeholder key fails with
+`{"error":"Unable to send quote email"}` (502).
 
 ### Testing with Postman
 
@@ -236,33 +373,47 @@ fail with a Stripe authentication error.
 ## Deployment
 
 1. Push the code to your host (Render, Railway, Fly.io, a VPS, etc.).
-2. Set the environment variables from `.env.example` in the host's environment settings —
-   never commit a real `.env` file.
+2. Set the environment variables from `.env.example` in the host's environment settings — never
+   commit a real `.env` file. This includes `RESEND_API_KEY` and `EMAIL_FROM`: the server refuses
+   to start without them (see [Getting your Resend API key](#getting-your-resend-api-key)).
 3. Run `npm install` then `npm start`.
 4. Set `CORS_ORIGIN` to your live Webflow domain(s), and `WEBFLOW_SUCCESS_URL` /
    `WEBFLOW_CANCEL_URL` to real pages on that site.
 5. Update `API_BASE_URL` in `public/webflow-checkout.js` to the deployed API's URL before
    pasting it into Webflow.
+6. Redeploying an app that was already live before this email feature existed? Run
+   `npm run hubspot:setup` once more (locally, pointed at production's `HUBSPOT_ACCESS_TOKEN`) to
+   backfill the new `no_deposit` option onto your existing `deposit_status` property — see step 6
+   in [Getting your HubSpot Service Key](#getting-your-hubspot-service-key).
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 | --- | --- |
-| Server won't start, `Missing required environment variable: X` | `.env` is missing one of `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `WEBFLOW_SUCCESS_URL`, `WEBFLOW_CANCEL_URL`, `CORS_ORIGIN`, `HUBSPOT_ACCESS_TOKEN` |
+| Server won't start, `Missing required environment variable: X` | `.env` is missing one of `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `WEBFLOW_SUCCESS_URL`, `WEBFLOW_CANCEL_URL`, `CORS_ORIGIN`, `HUBSPOT_ACCESS_TOKEN`, `RESEND_API_KEY`, `EMAIL_FROM` |
+| Server won't start, `EMAIL_FROM must be an email address or "Name <email@domain.com>"` | `EMAIL_FROM` doesn't match either accepted format — fix the value in `.env` |
 | Browser console shows a CORS error | The page's origin isn't in `CORS_ORIGIN` (must match exactly, including `https://` and no trailing slash) |
 | `{"error":"Unable to create checkout session"}` | Check the server logs — usually an invalid/placeholder `STRIPE_SECRET_KEY` |
-| `{"error":"quoteItems must be a JSON-encoded array..."}` | `quoteItems` isn't valid JSON, isn't an array, or an item is missing `name`/`price`/`qty` |
+| `{"error":"Unable to send quote email"}` (from `/api/quote/email`) | Check the server logs — usually an invalid/placeholder `RESEND_API_KEY`, or `EMAIL_FROM`'s domain isn't verified in Resend yet |
+| `{"error":"quoteItems must be a JSON-encoded array..."}` | `quoteItems` isn't valid JSON, isn't an array, or an item is missing `name`/`price`/`qty`. Note `price: 0` itself is valid — only `null`, a missing field, `NaN`, non-integers, and negatives are rejected |
 | `{"error":"Too many items in quoteItems"}` | The array has more items than `MAX_QUOTE_ITEMS` |
 | `{"error":"Quote total is outside the allowed range"}` | `sum(price × qty)` is outside `MIN_QUOTE_TOTAL`–`MAX_QUOTE_TOTAL` |
+| `429 Too Many Requests` on `/api/quote/email` sooner than expected | That route is limited to 5 requests / 15 min per IP (tighter than `/api/checkout`'s 20) — see [`POST /api/quote/email`](#post-apiquoteemail) |
 | Deal never moves off `deposit_status: pending` | Check server logs for HubSpot errors, and confirm the Stripe webhook is registered and pointed at the right URL/events (see `/api/webhooks/stripe` above) |
+| Customer never gets a receipt email after paying | Check server logs for `Failed to send receipt email` — same causes as the `/api/quote/email` row above, or the Stripe session had no customer email attached |
 | Webhook returns `Webhook Error: ...` (400) | `STRIPE_WEBHOOK_SECRET` doesn't match the endpoint's signing secret in the Stripe Dashboard, or the request body was altered (e.g. by a proxy re-encoding JSON) before reaching Express |
-| HubSpot sync silently does nothing | `HUBSPOT_ACCESS_TOKEN` is invalid/expired, lacks the required scopes, or `npm run hubspot:setup` was never run — check server logs, errors there don't fail the checkout request |
+| HubSpot sync silently does nothing | `HUBSPOT_ACCESS_TOKEN` is invalid/expired, lacks the required scopes, or `npm run hubspot:setup` was never run — check server logs, errors there don't fail the checkout/quote-email request |
 
 ## Webflow frontend
 
 `public/webflow-checkout.js` is a drop-in script for the Webflow form page — it reads plain HTML
 `name` attributes off your form, so build the form to this exact pattern and the script needs zero
-changes:
+changes. One form, two actions:
+
+- The form's own submit button pays a deposit (`POST /api/checkout`) and redirects to Stripe
+  Checkout.
+- An optional second button emails the itemized quote instead (`POST /api/quote/email`) — no
+  payment, no redirect, just a success message. Omit it if you only want the deposit flow.
 
 | Element | Attribute | Notes |
 | --- | --- | --- |
@@ -273,12 +424,15 @@ changes:
 | ZIP field | `name="zipCode"` | Optional |
 | Message field | `name="message"` | Optional, any `<input>` or `<textarea>` |
 | Cart data field | `name="quoteItems"` | Required — see below |
+| Pay-deposit button | `type="submit"` (inside the form) | Required — triggers `/api/checkout` |
+| Email-quote button | `id="quote-email-btn"`, `type="button"` | Optional — triggers `/api/quote/email`. Must be `type="button"`, not `type="submit"`, or it will also submit the form |
 | Error message container | `id="quote-form-error"` | Optional; falls back to a browser `alert()` if omitted |
+| Success message container | `id="quote-form-success"` | Optional (used by the email-quote button only); falls back to a browser `alert()` if omitted |
 
 `quoteItems` must be a **hidden field** whose `value` your own cart-building code sets to
-`JSON.stringify(cartArray)` before submit (this script forwards it as-is, it doesn't build the
-cart). `pageUrl` and `device` (browser/OS/screen info) are captured automatically — you don't add
-fields for those.
+`JSON.stringify(cartArray)` before either button is clicked (this script forwards it as-is, it
+doesn't build the cart). `pageUrl` and `device` (browser/OS/screen info) are captured
+automatically — you don't add fields for those.
 
 Example markup that follows this pattern exactly:
 
@@ -294,7 +448,10 @@ Example markup that follows this pattern exactly:
   <input type="hidden" name="quoteItems" value="">
 
   <div id="quote-form-error" style="display:none; color:#c00;"></div>
+  <div id="quote-form-success" style="display:none; color:#080;"></div>
+
   <button type="submit">Get Quote &amp; Pay Deposit</button>
+  <button type="button" id="quote-email-btn">Email Me the Quote Instead</button>
 </form>
 ```
 
@@ -303,7 +460,9 @@ To wire it up:
 1. Set `API_BASE_URL` at the top of the script below to your deployed API's URL.
 2. Paste the script into Webflow: Page Settings → Custom Code → **Before `</body>` tag** (or an
    embedded HTML/Script component near the form).
-3. Build the form to the pattern above — field names are case-sensitive and must match exactly.
+3. Build the form to the pattern above — field names/ids are case-sensitive and must match
+   exactly. Drop the `id="quote-email-btn"` button (and its `#quote-form-success` container) if you
+   only want the deposit flow.
 
 This script is kept in [`public/webflow-checkout.js`](public/webflow-checkout.js) — the copy below
 must be kept in sync with that file if either one changes:
@@ -316,7 +475,17 @@ must be kept in sync with that file if either one changes:
 // name, email, phone, zipCode, message, quoteItems
 // quoteItems must already hold the cart array serialized via JSON.stringify(...)
 // (this script forwards the string as-is, it does not build the cart itself).
+//
+// Two actions share this one form:
+// - The form's own submit (a <button type="submit"> inside it) pays a deposit via
+//   POST /api/checkout and redirects the browser to Stripe Checkout.
+// - A separate button (id="quote-email-btn", type="button" so it doesn't also submit
+//   the form) emails the itemized quote instead via POST /api/quote/email — no payment,
+//   no redirect. The button is optional: omit it and only the deposit flow is wired up.
+//
 // Optional error container: <div id="quote-form-error"></div>
+// Optional success container (used by the "email me the quote" action only):
+// <div id="quote-form-success"></div>
 (function () {
   const API_BASE_URL = 'https://your-api-domain.com'; // TODO: set your deployed API URL
 
@@ -324,25 +493,42 @@ must be kept in sync with that file if either one changes:
   if (!form) return;
 
   const errorEl = document.querySelector('#quote-form-error');
+  const successEl = document.querySelector('#quote-form-success');
   const submitBtn = form.querySelector('[type="submit"]');
+  const emailQuoteBtn = document.querySelector('#quote-email-btn');
 
-  function setLoading(isLoading) {
-    if (!submitBtn) return;
-    submitBtn.disabled = isLoading;
+  function setLoading(button, isLoading) {
+    if (!button) return;
+    button.disabled = isLoading;
 
     if (isLoading) {
-      submitBtn.dataset.originalText =
-        submitBtn.dataset.originalText || submitBtn.value || submitBtn.textContent;
+      button.dataset.originalText =
+        button.dataset.originalText || button.value || button.textContent;
       const label = 'Processing...';
-      if (submitBtn.tagName === 'INPUT') submitBtn.value = label;
-      else submitBtn.textContent = label;
-    } else if (submitBtn.dataset.originalText) {
-      if (submitBtn.tagName === 'INPUT') submitBtn.value = submitBtn.dataset.originalText;
-      else submitBtn.textContent = submitBtn.dataset.originalText;
+      if (button.tagName === 'INPUT') button.value = label;
+      else button.textContent = label;
+    } else if (button.dataset.originalText) {
+      if (button.tagName === 'INPUT') button.value = button.dataset.originalText;
+      else button.textContent = button.dataset.originalText;
+    }
+  }
+
+  function clearSuccess() {
+    if (successEl) {
+      successEl.textContent = '';
+      successEl.style.display = 'none';
+    }
+  }
+
+  function clearError() {
+    if (errorEl) {
+      errorEl.textContent = '';
+      errorEl.style.display = 'none';
     }
   }
 
   function showError(message) {
+    clearSuccess();
     if (errorEl) {
       errorEl.textContent = message;
       errorEl.style.display = 'block';
@@ -351,10 +537,13 @@ must be kept in sync with that file if either one changes:
     }
   }
 
-  function clearError() {
-    if (errorEl) {
-      errorEl.textContent = '';
-      errorEl.style.display = 'none';
+  function showSuccess(message) {
+    clearError();
+    if (successEl) {
+      successEl.textContent = message;
+      successEl.style.display = 'block';
+    } else {
+      alert(message);
     }
   }
 
@@ -369,13 +558,9 @@ must be kept in sync with that file if either one changes:
     };
   }
 
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    clearError();
-    setLoading(true);
-
+  function buildPayload() {
     const formData = new FormData(form);
-    const payload = {
+    return {
       name: formData.get('name') || '',
       email: formData.get('email') || '',
       phone: formData.get('phone') || '',
@@ -385,12 +570,19 @@ must be kept in sync with that file if either one changes:
       pageUrl: window.location.href,
       device: collectDeviceInfo(),
     };
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    clearError();
+    clearSuccess();
+    setLoading(submitBtn, true);
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload()),
       });
 
       const data = await response.json();
@@ -402,14 +594,48 @@ must be kept in sync with that file if either one changes:
       window.location.href = data.checkoutUrl;
     } catch (err) {
       showError(err.message || 'Something went wrong. Please try again.');
-      setLoading(false);
+      setLoading(submitBtn, false);
     }
   });
+
+  if (emailQuoteBtn) {
+    emailQuoteBtn.addEventListener('click', async () => {
+      // Runs the form's native required/type validation (e.g. name, email) without
+      // submitting it, since this button is type="button".
+      if (!form.reportValidity()) return;
+
+      clearError();
+      clearSuccess();
+      setLoading(emailQuoteBtn, true);
+
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/quote/email`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(buildPayload()),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.ok) {
+          throw new Error(data.error || 'Something went wrong. Please try again.');
+        }
+
+        showSuccess("Check your inbox — we've emailed you the quote.");
+      } catch (err) {
+        showError(err.message || 'Something went wrong. Please try again.');
+      } finally {
+        setLoading(emailQuoteBtn, false);
+      }
+    });
+  }
 })();
 ```
 
-The script prevents the default form submit, disables the submit button while the request is in
-flight, and redirects the browser to `checkoutUrl` on success.
+The submit handler prevents the default form submit, disables the deposit button while the
+request is in flight, and redirects the browser to `checkoutUrl` on success. The email-quote
+button (if present) instead disables itself, shows a success message on completion, and never
+navigates away from the page.
 
 ## Notes
 
@@ -418,3 +644,23 @@ flight, and redirects the browser to `checkoutUrl` on success.
   `quoteItems`, not looked up from a trusted product catalog. `MIN_QUOTE_TOTAL`/`MAX_QUOTE_TOTAL`
   are a sanity guardrail against obviously tampered or garbage values, not a substitute for
   server-side pricing if that becomes a concern later.
+- `deposit_status` on a HubSpot deal can be `pending`, `paid`, `expired`, `failed`, or
+  `no_deposit` (set by `/api/quote/email` when the customer chose to get the quote emailed
+  instead of paying now).
+- Email deliverability for both `/api/quote/email` and the payment receipt depends entirely on
+  `EMAIL_FROM`'s domain being verified in Resend — an unverified domain will fail sends outright,
+  and even a verified one can still land in spam without properly configured SPF/DKIM (which
+  Resend's domain setup walks you through) and a reasonable sending reputation.
+- `/api/quote/email` sends to whatever address the request supplies with no proof the requester
+  controls that inbox — the same trust model as most "email me a quote" web forms. The 5-per-15-min
+  per-IP rate limit and 5-minute duplicate-submission dedup bound casual abuse, but this is not a
+  verified-delivery guarantee.
+- All three emailed views of a cart — the quote email, the paid receipt, and HubSpot's
+  `quote_items_json` — carry the same full list of items, `price: 0` ones included. Only the
+  Stripe Checkout Session (and therefore what's actually charged) is filtered to priced items.
+- Quote/receipt emails are branded with the logo and colors defined in
+  [`src/email/templates/shared.js`](src/email/templates/shared.js) (`BRAND.logoUrl`, `BRAND.primary`,
+  `BRAND.dark`) — update that one file to rebrand both templates. The logo is referenced by URL
+  (not embedded), so it must stay reachable at that address, and note that some email clients
+  (notably Outlook desktop) don't render SVG images — the alt text (`BRAND.name`) shows in those
+  clients instead.
