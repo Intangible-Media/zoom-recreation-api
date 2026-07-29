@@ -90,12 +90,16 @@ for new accounts, so skip anything with those names if you see them. The current
      account-wide key for managing app configs/webhook subscriptions, and won't work for this
      integration's CRM calls.
 2. Click **"Create service key"** (or open an existing one you've already made for this).
-3. Under **Scopes**, add all 5 of these — the app will fail without any one of them:
+3. Under **Scopes**, add all 6 of these. The first 5 are required — HubSpot sync fails outright
+   without any of them. `crm.objects.notes.write` is recommended but not hard-required: without
+   it, contacts/deals are still created, just without the rep-readable cart-details Note (see
+   [`POST /api/checkout`](#post-apicheckout) below) — logged as an error, not a hard failure.
    - `crm.objects.contacts.read`
    - `crm.objects.contacts.write`
    - `crm.objects.deals.write`
    - `crm.schemas.contacts.write`
    - `crm.schemas.deals.write`
+   - `crm.objects.notes.write` (recommended — see above)
 4. Click **Show**, then **Copy**, next to the key value (starts with `pat-...`). Paste it into
    `HUBSPOT_ACCESS_TOKEN` in `.env`. Never commit this value.
 5. Give the key a clear name (e.g. "Checkout HubSpot Sync") so it's identifiable later — not
@@ -131,6 +135,16 @@ npm run dev
 Server starts on `http://localhost:3000` (or your configured `PORT`).
 
 ## Endpoints
+
+### `GET /`
+
+Serves [`public/index.html`](public/index.html) — a self-contained documentation homepage covering
+both audiences: a plain-language "how it works" walkthrough (for the business side — what happens
+when a customer submits a quote, pays a deposit, or requests an email-only quote, and what shows
+up in HubSpot) and a developer-facing API reference. It's a static file with brand colors/logo
+matching the emails (see [`src/email/templates/shared.js`](src/email/templates/shared.js)'s
+`BRAND` constant — kept in sync by hand, there's no templating engine in this app). Safe to be
+public: it documents behavior, not secrets.
 
 ### `GET /health`
 
@@ -199,8 +213,11 @@ Response:
 ```
 
 Before creating the Stripe session, this endpoint also upserts a HubSpot Contact (by email) and
-creates an associated Deal with `deposit_status` set to `pending`. If HubSpot is unreachable or
-misconfigured, this is logged and swallowed — the customer still gets a `checkoutUrl`.
+creates an associated Deal with `deposit_status` set to `pending`, plus a **Note** on that deal
+listing every cart item in plain language (name, quantity, price or "price provided after
+review", and the total) — so a sales rep can open the deal and understand the request without
+reading `quote_items_json`'s raw JSON. If HubSpot is unreachable or misconfigured, all of this is
+logged and swallowed — the customer still gets a `checkoutUrl`.
 
 Rate-limited to 20 requests / 15 min per IP.
 
@@ -385,6 +402,10 @@ fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a
    `npm run hubspot:setup` once more (locally, pointed at production's `HUBSPOT_ACCESS_TOKEN`) to
    backfill the new `no_deposit` option onto your existing `deposit_status` property — see step 6
    in [Getting your HubSpot Service Key](#getting-your-hubspot-service-key).
+7. Redeploying an app whose HubSpot Service Key predates the deal-details Note feature? Add the
+   `crm.objects.notes.write` scope to that key (step 3 in
+   [Getting your HubSpot Service Key](#getting-your-hubspot-service-key)) — without it, deals still
+   get created, just without the readable Note (logged as an error, not a hard failure).
 
 ## Troubleshooting
 
@@ -403,6 +424,7 @@ fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a
 | Customer never gets a receipt email after paying | Check server logs for `Failed to send receipt email` — same causes as the `/api/quote/email` row above, or the Stripe session had no customer email attached |
 | Webhook returns `Webhook Error: ...` (400) | `STRIPE_WEBHOOK_SECRET` doesn't match the endpoint's signing secret in the Stripe Dashboard, or the request body was altered (e.g. by a proxy re-encoding JSON) before reaching Express |
 | HubSpot sync silently does nothing | `HUBSPOT_ACCESS_TOKEN` is invalid/expired, lacks the required scopes, or `npm run hubspot:setup` was never run — check server logs, errors there don't fail the checkout/quote-email request |
+| Deal is created but has no cart-details Note | The HubSpot key is missing the `crm.objects.notes.write` scope — check server logs for `Failed to create quote-details note`; add the scope (see [Getting your HubSpot Service Key](#getting-your-hubspot-service-key)) |
 
 ## Webflow frontend
 
@@ -647,6 +669,10 @@ navigates away from the page.
 - `deposit_status` on a HubSpot deal can be `pending`, `paid`, `expired`, `failed`, or
   `no_deposit` (set by `/api/quote/email` when the customer chose to get the quote emailed
   instead of paying now).
+- Every deal also gets a **Note** (see [`src/hubspot/formatQuoteNote.js`](src/hubspot/formatQuoteNote.js))
+  listing the cart in plain language for sales — `quote_items_json` remains the machine-readable
+  source of truth the receipt email is built from, the Note is a human-readable summary of the
+  same data, not a second copy of record.
 - Email deliverability for both `/api/quote/email` and the payment receipt depends entirely on
   `EMAIL_FROM`'s domain being verified in Resend — an unverified domain will fail sends outright,
   and even a verified one can still land in spam without properly configured SPF/DKIM (which

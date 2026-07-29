@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -8,6 +10,7 @@ import checkoutRouter from './src/routes/checkout.js';
 import emailQuoteRouter from './src/routes/emailQuote.js';
 import stripeWebhookRouter from './src/routes/stripeWebhook.js';
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 
 // Deployed behind a single reverse proxy (Render/Railway/Fly.io) — needed so
@@ -41,6 +44,10 @@ const emailQuoteLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+// Combined dev/business docs homepage — not the JSON API surface, just an
+// explainer page, so it's served directly rather than through a JSON route.
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.use('/health', healthRouter);
 app.use('/api/checkout', checkoutLimiter, checkoutRouter);

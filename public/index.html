@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zoom Rec Checkout API — Documentation</title>
+<!--
+  Brand colors/logo mirror src/email/templates/shared.js's BRAND constant.
+  This is a static file (no templating engine in this app), so keep the two in
+  sync by hand if the branding ever changes.
+-->
+<style>
+  :root {
+    --brand-primary: #ffc907;
+    --brand-dark: #231f20;
+    --bg: #ffffff;
+    --bg-alt: #f7f7f7;
+    --border: #e5e5e5;
+    --text-muted: #666666;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16151a;
+      --bg-alt: #1e1d23;
+      --border: #34333a;
+      --text-muted: #a3a1a8;
+      --brand-dark: #f2f0f1;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--brand-dark);
+    line-height: 1.55;
+  }
+  header {
+    padding: 24px max(16px, calc(50% - 340px));
+    border-bottom: 3px solid var(--brand-primary);
+  }
+  header img { display: block; height: 40px; }
+  nav {
+    padding: 12px max(16px, calc(50% - 340px));
+    background: var(--bg-alt);
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    overflow-x: auto;
+  }
+  nav a {
+    color: inherit;
+    text-decoration: none;
+    margin-right: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  nav a:hover { color: var(--brand-primary); filter: brightness(0.7); }
+  main { max-width: 680px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0; }
+  h2 { font-size: 20px; margin: 40px 0 12px; padding-top: 8px; border-top: 1px solid var(--border); }
+  h2:first-of-type { border-top: none; padding-top: 0; }
+  h3 { font-size: 15px; margin: 20px 0 6px; }
+  p { margin: 0 0 12px; }
+  .tagline { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+  .card {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+  }
+  ol, ul { padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 12px 0; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { border-bottom: 2px solid var(--brand-primary); }
+  code {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 0.9em;
+    font-family: ui-monospace, Consolas, monospace;
+  }
+  pre {
+    background: var(--bg-alt);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+  pre code { background: none; border: none; padding: 0; }
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--brand-primary);
+    color: var(--brand-dark);
+  }
+  footer {
+    text-align: center;
+    padding: 24px 16px 48px;
+    color: var(--text-muted);
+    font-size: 13px;
+  }
+  footer a { color: inherit; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+
+<header>
+  <img src="https://cdn.prod.website-files.com/62d9646b4c2ec13d75b22cc4/62d97140d89c2f1b488f43c5_Group%203073.svg" alt="Zoom Rec">
+  <h1 style="margin-top:14px;">Checkout API — Documentation</h1>
+  <p class="tagline">Turns a Webflow quote form into a Stripe deposit or an emailed quote, and keeps HubSpot up to date either way.</p>
+</header>
+
+<nav>
+  <a href="#overview">Overview</a>
+  <a href="#how-it-works">How it works</a>
+  <a href="#developers">For developers</a>
+  <a href="#api-reference">API reference</a>
+  <a href="#support">Support</a>
+</nav>
+
+<main>
+
+<section id="overview">
+<h2>Overview</h2>
+<p>This service sits behind your Webflow quote form. A customer builds a cart, then either:</p>
+<ul>
+  <li><strong>Pays a deposit</strong> — redirected to a real Stripe Checkout session, itemized line by line, or</li>
+  <li><strong>Requests the quote by email</strong> — no payment, the itemized quote is emailed immediately.</li>
+</ul>
+<p>Either way, the lead is recorded in HubSpot as a Contact and Deal, with a plain-language note listing everything in the cart — so a salesperson never has to read raw data to understand what a customer wants.</p>
+</section>
+
+<section id="how-it-works">
+<h2>How it works</h2>
+
+<h3>1. Customer submits the form</h3>
+<p>Name, email, and cart are sent to this API. Each cart item has a name, quantity, and a price — or <code>price: 0</code> for something that needs an in-person/site review before it can be priced (e.g. custom surfacing). Quote-only items are never charged, but they're never dropped either — they travel through every downstream view of the order.</p>
+
+<h3>2. Choosing deposit vs. email-only</h3>
+<div class="card">
+<strong>Pay a deposit</strong> (<code>POST /api/checkout</code>)
+<p style="margin:8px 0 0;">Only the priced items go to Stripe (there's nothing to charge for a $0 item). The customer is redirected to Stripe's hosted checkout and pays with a card.</p>
+</div>
+<div class="card">
+<strong>Email me the quote</strong> (<code>POST /api/quote/email</code>)
+<p style="margin:8px 0 0;">No Stripe session at all. The full cart — priced and quote-only items — is emailed immediately, itemized, with quote-only items clearly marked instead of showing a misleading "$0.00".</p>
+</div>
+
+<h3>3. What HubSpot sees</h3>
+<p>Every submission — deposit or email-only — creates or updates a Contact (by email) and a Deal, tagged with a <code>Deposit Status</code>:</p>
+<table>
+<tr><th>Status</th><th>Meaning</th></tr>
+<tr><td><span class="pill">Pending</span></td><td>Sent to Stripe Checkout, payment not yet confirmed</td></tr>
+<tr><td><span class="pill">Paid</span></td><td>Stripe confirmed the deposit</td></tr>
+<tr><td><span class="pill">No Deposit</span></td><td>Customer chose "email me the quote" — no payment involved</td></tr>
+<tr><td><span class="pill">Failed</span> / <span class="pill">Expired</span></td><td>The Stripe session didn't complete</td></tr>
+</table>
+<p>The Deal also gets a <strong>Note</strong> — not just a raw data field — listing every item, its price (or "price provided after review"), and the total, so a rep can open the deal and immediately understand the request without decoding anything.</p>
+
+<h3>4. After a deposit is paid</h3>
+<p>A branded receipt email goes out automatically. If the original cart mixed priced and quote-only items, the receipt shows <strong>two tables</strong>: what was actually paid for, and what still needs pricing — so nothing about the order is ambiguous to the customer.</p>
+</section>
+
+<section id="developers">
+<h2>For developers</h2>
+<p>Plain Node.js + Express (ESM), no database — Stripe Checkout Sessions and HubSpot Deals are the system of record. No build step, no frontend framework.</p>
+<table>
+<tr><th>Concern</th><th>Handled by</th></tr>
+<tr><td>Payments</td><td><a href="https://stripe.com">Stripe</a> Checkout Sessions</td></tr>
+<tr><td>CRM / lead tracking</td><td><a href="https://www.hubspot.com">HubSpot</a> Contacts, Deals &amp; Notes</td></tr>
+<tr><td>Transactional email</td><td><a href="https://resend.com">Resend</a></td></tr>
+<tr><td>Frontend</td><td>Plain JS snippet pasted into Webflow (<code>public/webflow-checkout.js</code>) — no SPA</td></tr>
+</table>
+<p>Full setup instructions (env vars, getting API keys, local development, deployment, troubleshooting) live in the repo's <code>README.md</code> — this page is a map, not a replacement for it.</p>
+</section>
+
+<section id="api-reference">
+<h2>API reference</h2>
+<table>
+<tr><th>Method &amp; path</th><th>Purpose</th><th>Notes</th></tr>
+<tr><td><code>GET /health</code></td><td>Liveness check</td><td>Returns <code>{ ok: true }</code></td></tr>
+<tr><td><code>POST /api/checkout</code></td><td>Create a Stripe Checkout session for a deposit</td><td>20 req / 15 min per IP</td></tr>
+<tr><td><code>POST /api/quote/email</code></td><td>Email the itemized quote, no payment</td><td>5 req / 15 min per IP</td></tr>
+<tr><td><code>POST /api/webhooks/stripe</code></td><td>Stripe-only — updates HubSpot &amp; sends the receipt</td><td>Not for manual calls; verified via <code>Stripe-Signature</code></td></tr>
+</table>
+<p>Both POST routes take the same body shape — <code>name</code>, <code>email</code>, and a JSON-encoded <code>quoteItems</code> string. See the README's endpoint sections for full request/response examples.</p>
+</section>
+
+<section id="support">
+<h2>Support</h2>
+<p>Something look wrong with an order? Check the <code>Deposit Status</code> and the details Note on the HubSpot Deal first — between those two, most questions about what a customer ordered and whether they paid are answerable without touching the code.</p>
+</section>
+
+</main>
+
+<footer>
+  Zoom Rec Checkout API — see the project README for full setup and troubleshooting.
+</footer>
+
+</body>
+</html>

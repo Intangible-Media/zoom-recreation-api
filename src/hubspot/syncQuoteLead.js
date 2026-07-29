@@ -1,5 +1,7 @@
 import { upsertContact } from './contacts.js';
 import { createDeal, setDealStripeSession } from './deals.js';
+import { createDealNote } from './notes.js';
+import { formatQuoteNoteHtml } from './formatQuoteNote.js';
 import { CONTACT_PROPERTIES, DEPOSIT_STATUS } from './properties.js';
 import { parseDevice } from '../utils/parseDevice.js';
 import { sanitizeText, safeStringify } from '../utils/sanitizeText.js';
@@ -67,6 +69,15 @@ export async function syncQuoteLead({
     quoteItemsJson: safeStringify(items, MAX_QUOTE_ITEMS_JSON_LEN),
     depositStatus,
   });
+
+  // Best-effort: a rep-readable note is a nice-to-have on top of the deal that
+  // already exists — a note-creation hiccup (e.g. a missing notes scope on the
+  // HubSpot key) shouldn't fail the whole sync over it.
+  try {
+    await createDealNote(dealId, formatQuoteNoteHtml({ items, total, depositStatus }));
+  } catch (err) {
+    console.error(`Failed to create quote-details note on HubSpot deal ${dealId}:`, err);
+  }
 
   return { contactId, dealId };
 }
