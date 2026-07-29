@@ -90,16 +90,17 @@ for new accounts, so skip anything with those names if you see them. The current
      account-wide key for managing app configs/webhook subscriptions, and won't work for this
      integration's CRM calls.
 2. Click **"Create service key"** (or open an existing one you've already made for this).
-3. Under **Scopes**, add all 6 of these. The first 5 are required — HubSpot sync fails outright
-   without any of them. `crm.objects.notes.write` is recommended but not hard-required: without
-   it, contacts/deals are still created, just without the rep-readable cart-details Note (see
-   [`POST /api/checkout`](#post-apicheckout) below) — logged as an error, not a hard failure.
+3. Under **Scopes**, add all 5 of these — the app will fail without any one of them:
    - `crm.objects.contacts.read`
    - `crm.objects.contacts.write`
    - `crm.objects.deals.write`
    - `crm.schemas.contacts.write`
    - `crm.schemas.deals.write`
-   - `crm.objects.notes.write` (recommended — see above)
+
+   There's no separate scope for Notes — HubSpot doesn't expose one (Notes are an
+   engagement type, not a standalone CRM object with its own scope). Creating a Note
+   associated to a deal is authorized by `crm.objects.deals.write` above, the same
+   scope that already covers writing the deal itself.
 4. Click **Show**, then **Copy**, next to the key value (starts with `pat-...`). Paste it into
    `HUBSPOT_ACCESS_TOKEN` in `.env`. Never commit this value.
 5. Give the key a clear name (e.g. "Checkout HubSpot Sync") so it's identifiable later — not
@@ -402,10 +403,6 @@ fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a
    `npm run hubspot:setup` once more (locally, pointed at production's `HUBSPOT_ACCESS_TOKEN`) to
    backfill the new `no_deposit` option onto your existing `deposit_status` property — see step 6
    in [Getting your HubSpot Service Key](#getting-your-hubspot-service-key).
-7. Redeploying an app whose HubSpot Service Key predates the deal-details Note feature? Add the
-   `crm.objects.notes.write` scope to that key (step 3 in
-   [Getting your HubSpot Service Key](#getting-your-hubspot-service-key)) — without it, deals still
-   get created, just without the readable Note (logged as an error, not a hard failure).
 
 ## Troubleshooting
 
@@ -424,7 +421,7 @@ fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a
 | Customer never gets a receipt email after paying | Check server logs for `Failed to send receipt email` — same causes as the `/api/quote/email` row above, or the Stripe session had no customer email attached |
 | Webhook returns `Webhook Error: ...` (400) | `STRIPE_WEBHOOK_SECRET` doesn't match the endpoint's signing secret in the Stripe Dashboard, or the request body was altered (e.g. by a proxy re-encoding JSON) before reaching Express |
 | HubSpot sync silently does nothing | `HUBSPOT_ACCESS_TOKEN` is invalid/expired, lacks the required scopes, or `npm run hubspot:setup` was never run — check server logs, errors there don't fail the checkout/quote-email request |
-| Deal is created but has no cart-details Note | The HubSpot key is missing the `crm.objects.notes.write` scope — check server logs for `Failed to create quote-details note`; add the scope (see [Getting your HubSpot Service Key](#getting-your-hubspot-service-key)) |
+| Deal is created but has no cart-details Note | Check server logs for `Failed to create quote-details note` and the HubSpot error beneath it — the deal itself still gets created either way, since note creation is best-effort |
 
 ## Webflow frontend
 
