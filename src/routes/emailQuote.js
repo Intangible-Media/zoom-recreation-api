@@ -9,15 +9,21 @@ const IDEMPOTENCY_WINDOW_MS = 5 * 60 * 1000;
 
 const router = Router();
 
-// So a double-click/retry within IDEMPOTENCY_WINDOW_MS doesn't send a second email or
-// create a second HubSpot deal for the same submission (mirrors checkout.js's cache).
+// Two separate caches, mirroring checkout.js's pattern exactly:
+// - hubspotSyncCache holds the sync result as soon as it succeeds, independent of
+//   whether the email send that follows succeeds — so a retry after a failed send
+//   (e.g. a transient Resend outage) reuses the existing deal instead of creating a
+//   new one every attempt.
+// - sentQuoteEmails is only set once the email has actually gone out, so a retry
+//   after a successful send doesn't re-send it.
+const hubspotSyncCache = createIdempotencyCache(IDEMPOTENCY_WINDOW_MS);
 const sentQuoteEmails = createIdempotencyCache(IDEMPOTENCY_WINDOW_MS);
 
 // For customers who want the quote emailed to them instead of paying a deposit now.
-// Sending the email is the whole point of this route, so it happens first and its
-// failure is reported to the caller (502) — unlike the best-effort HubSpot sync,
-// which only runs after a successful send so a HubSpot outage never leaves behind a
-// deal that implies a quote email went out when it didn't.
+// HubSpot sync runs first (best-effort, same order as checkout.js) so the email can
+// include the deal's id as an order number. If HubSpot is unreachable, the sync
+// failure is logged and the email still goes out — just without an order number,
+// rather than blocking the whole point of this route on a HubSpot outage.
 router.post('/', async (req, res) => {
   // Unlike /api/checkout, a cart made entirely of quote-only ($0) items is valid
   // here — there's no payment involved either way.
@@ -38,33 +44,37 @@ router.post('/', async (req, res) => {
     return res.json({ ok: true });
   }
 
+  let hubspot = hubspotSyncCache.get(idempotencyKey);
+  if (!hubspot) {
+    try {
+      hubspot = await syncQuoteLead({
+        name,
+        email,
+        phone,
+        zipCode,
+        message,
+        pageUrl,
+        items,
+        total,
+        deviceRaw: device,
+        serverUserAgent: req.headers['user-agent'],
+        ip: req.ip,
+        depositStatus: DEPOSIT_STATUS.NO_DEPOSIT,
+      });
+      hubspotSyncCache.set(idempotencyKey, hubspot);
+    } catch (err) {
+      console.error('Failed to sync no-deposit quote lead to HubSpot:', err);
+    }
+  }
+
   try {
-    await sendQuoteEmail({ to: email, name, items, total });
+    await sendQuoteEmail({ to: email, name, items, total, orderNumber: hubspot?.dealId });
   } catch (err) {
     console.error('Failed to send quote email:', err);
     return res.status(502).json({ error: 'Unable to send quote email' });
   }
 
   sentQuoteEmails.set(idempotencyKey, true);
-
-  try {
-    await syncQuoteLead({
-      name,
-      email,
-      phone,
-      zipCode,
-      message,
-      pageUrl,
-      items,
-      total,
-      deviceRaw: device,
-      serverUserAgent: req.headers['user-agent'],
-      ip: req.ip,
-      depositStatus: DEPOSIT_STATUS.NO_DEPOSIT,
-    });
-  } catch (err) {
-    console.error('Failed to sync no-deposit quote lead to HubSpot:', err);
-  }
 
   return res.json({ ok: true });
 });

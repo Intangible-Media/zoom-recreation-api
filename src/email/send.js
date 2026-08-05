@@ -14,12 +14,12 @@ async function send(payload) {
   }
 }
 
-export async function sendQuoteEmail({ to, name, items, total }) {
-  const { subject, html, text } = buildQuoteEmail({ name, items, total });
+export async function sendQuoteEmail({ to, name, items, total, orderNumber }) {
+  const { subject, html, text } = buildQuoteEmail({ name, items, total, orderNumber });
   await send({ from: config.emailFrom, to, subject, html, text });
 }
 
-export async function sendReceiptEmail({ to, name, items, total, sessionId }) {
-  const { subject, html, text } = buildReceiptEmail({ name, items, total, sessionId });
+export async function sendReceiptEmail({ to, name, items, total, sessionId, orderNumber }) {
+  const { subject, html, text } = buildReceiptEmail({ name, items, total, sessionId, orderNumber });
   await send({ from: config.emailFrom, to, subject, html, text });
 }

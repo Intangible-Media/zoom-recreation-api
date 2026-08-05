@@ -7,6 +7,7 @@ const REQUIRED_VARS = [
   'HUBSPOT_ACCESS_TOKEN',
   'RESEND_API_KEY',
   'EMAIL_FROM',
+  'HUBSPOT_DEAL_PIPELINE',
 ];
 
 for (const key of REQUIRED_VARS) {
@@ -40,4 +41,9 @@ export const config = {
   hubspotAccessToken: process.env.HUBSPOT_ACCESS_TOKEN,
   resendApiKey: process.env.RESEND_API_KEY,
   emailFrom: process.env.EMAIL_FROM,
+  // Pipeline/stage are resolved by label, not id — ids are portal-specific and this
+  // app now talks to more than one HubSpot portal. Stage is optional: unset means
+  // "use the pipeline's first stage" (see src/hubspot/pipelines.js).
+  hubspotDealPipeline: process.env.HUBSPOT_DEAL_PIPELINE,
+  hubspotDealStage: process.env.HUBSPOT_DEAL_STAGE || null,
 };

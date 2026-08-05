@@ -2,6 +2,7 @@ import { upsertContact } from './contacts.js';
 import { createDeal, setDealStripeSession } from './deals.js';
 import { createDealNote } from './notes.js';
 import { formatQuoteNoteHtml } from './formatQuoteNote.js';
+import { getDealPipelineAndStage } from './pipelines.js';
 import { CONTACT_PROPERTIES, DEPOSIT_STATUS } from './properties.js';
 import { parseDevice } from '../utils/parseDevice.js';
 import { sanitizeText, safeStringify } from '../utils/sanitizeText.js';
@@ -62,19 +63,32 @@ export async function syncQuoteLead({
     [CONTACT_PROPERTIES.DEVICE_INFO]: formatDeviceInfo(device, serverUserAgent, ip),
   });
 
+  // Best-effort: if the configured pipeline/stage name can't be resolved (typo,
+  // wrong portal, pipeline renamed), log it loudly but still create the deal —
+  // it lands in the account's default pipeline rather than blocking the sync.
+  let pipelineId;
+  let stageId;
+  try {
+    ({ pipelineId, stageId } = await getDealPipelineAndStage());
+  } catch (err) {
+    console.error('Failed to resolve HubSpot deal pipeline/stage, using the account default:', err);
+  }
+
   const dealId = await createDeal({
     dealname: `Quote - ${safeName}`.slice(0, 255),
     amount: total,
     contactId,
     quoteItemsJson: safeStringify(items, MAX_QUOTE_ITEMS_JSON_LEN),
     depositStatus,
+    pipelineId,
+    stageId,
   });
 
   // Best-effort: a rep-readable note is a nice-to-have on top of the deal that
   // already exists — a note-creation hiccup (e.g. a missing notes scope on the
   // HubSpot key) shouldn't fail the whole sync over it.
   try {
-    await createDealNote(dealId, formatQuoteNoteHtml({ items, total, depositStatus }));
+    await createDealNote(dealId, formatQuoteNoteHtml({ dealId, items, total, depositStatus }));
   } catch (err) {
     console.error(`Failed to create quote-details note on HubSpot deal ${dealId}:`, err);
   }

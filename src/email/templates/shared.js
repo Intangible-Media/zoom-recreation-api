@@ -102,3 +102,18 @@ export function renderEmailWrapperHtml(bodyHtml) {
 export function renderEmailWrapperText(bodyLines) {
   return [BRAND.name, '', ...bodyLines].join('\n');
 }
+
+/**
+ * The customer-facing order number is the HubSpot deal's id — omitted (not a
+ * placeholder like "pending") when the deal doesn't exist yet, e.g. HubSpot sync
+ * failed for this submission. See emailQuote.js/stripeWebhook.js for where this
+ * comes from on each email.
+ */
+export function renderOrderNumberHtml(orderNumber) {
+  if (!orderNumber) return '';
+  return `<p style="font-size:15px;margin:0 0 16px;"><strong>Order #: ${escapeHtml(orderNumber)}</strong></p>`;
+}
+
+export function renderOrderNumberText(orderNumber) {
+  return orderNumber ? `Order #: ${orderNumber}` : '';
+}

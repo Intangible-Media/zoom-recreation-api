@@ -108,6 +108,9 @@ async function sendReceiptForSession(session, dealId) {
     items,
     total: session.amount_total / 100,
     sessionId: session.id,
+    // The order number customers see is the HubSpot deal id — omitted (not a
+    // placeholder) if the original checkout-time HubSpot sync never succeeded.
+    orderNumber: dealId,
   });
 }
 

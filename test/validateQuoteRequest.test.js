@@ -17,6 +17,7 @@ process.env.EMAIL_FROM ??= 'Test <test@example.com>';
 process.env.MIN_QUOTE_TOTAL ??= '1';
 process.env.MAX_QUOTE_TOTAL ??= '1000000';
 process.env.MAX_QUOTE_ITEMS ??= '50';
+process.env.HUBSPOT_DEAL_PIPELINE ??= 'Sales Order Pipeline';
 
 const { validateQuoteRequest } = await import('../src/utils/validateQuoteRequest.js');
 

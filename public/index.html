@@ -149,15 +149,16 @@
 <h3>2. Choosing deposit vs. email-only</h3>
 <div class="card">
 <strong>Pay a deposit</strong> (<code>POST /api/checkout</code>)
-<p style="margin:8px 0 0;">Only the priced items go to Stripe (there's nothing to charge for a $0 item). The customer is redirected to Stripe's hosted checkout and pays with a card.</p>
+<p style="margin:8px 0 0;">A HubSpot Deal is created first, then only the priced items go to Stripe (there's nothing to charge for a $0 item). The customer is redirected to Stripe's hosted checkout and pays with a card.</p>
 </div>
 <div class="card">
 <strong>Email me the quote</strong> (<code>POST /api/quote/email</code>)
-<p style="margin:8px 0 0;">No Stripe session at all. The full cart — priced and quote-only items — is emailed immediately, itemized, with quote-only items clearly marked instead of showing a misleading "$0.00".</p>
+<p style="margin:8px 0 0;">A HubSpot Deal is created first, then the full cart — priced and quote-only items — is emailed immediately, itemized, with quote-only items clearly marked instead of showing a misleading "$0.00". No Stripe session at all.</p>
 </div>
+<p>The Deal is created before the email/checkout step specifically so its own id can be used as the customer's <strong>Order #</strong> — the same number shows up in the email and on the Deal, so a support call referencing "Order #12345" maps straight to that Deal.</p>
 
 <h3>3. What HubSpot sees</h3>
-<p>Every submission — deposit or email-only — creates or updates a Contact (by email) and a Deal, tagged with a <code>Deposit Status</code>:</p>
+<p>Every submission — deposit or email-only — creates or updates a Contact (by email) and a Deal, placed directly into a specific configured pipeline (e.g. "Sales Order Pipeline") rather than the account's default one, and tagged with a <code>Deposit Status</code>:</p>
 <table>
 <tr><th>Status</th><th>Meaning</th></tr>
 <tr><td><span class="pill">Pending</span></td><td>Sent to Stripe Checkout, payment not yet confirmed</td></tr>
@@ -165,10 +166,10 @@
 <tr><td><span class="pill">No Deposit</span></td><td>Customer chose "email me the quote" — no payment involved</td></tr>
 <tr><td><span class="pill">Failed</span> / <span class="pill">Expired</span></td><td>The Stripe session didn't complete</td></tr>
 </table>
-<p>The Deal also gets a <strong>Note</strong> — not just a raw data field — listing every item, its price (or "price provided after review"), and the total, so a rep can open the deal and immediately understand the request without decoding anything.</p>
+<p>The Deal also gets a <strong>Note</strong> — not just a raw data field — leading with <strong>Order #</strong> and an <strong>Order Type</strong> line ("Deposit — awaiting Stripe Checkout" or "Email Quote Only — no deposit collected"), so a rep knows which route the customer chose at a glance, without opening anything else. Below that: every item, its price (or "price provided after review"), and the total.</p>
 
 <h3>4. After a deposit is paid</h3>
-<p>A branded receipt email goes out automatically. If the original cart mixed priced and quote-only items, the receipt shows <strong>two tables</strong>: what was actually paid for, and what still needs pricing — so nothing about the order is ambiguous to the customer.</p>
+<p>A branded receipt email goes out automatically, with the same Order # as the Deal. If the original cart mixed priced and quote-only items, the receipt shows <strong>two tables</strong>: what was actually paid for, and what still needs pricing — so nothing about the order is ambiguous to the customer.</p>
 </section>
 
 <section id="developers">

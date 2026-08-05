@@ -1,13 +1,20 @@
 import { escapeHtml } from '../../utils/escapeHtml.js';
 import { formatCurrency } from '../../utils/formatCurrency.js';
-import { renderItemsTableHtml, renderItemsTableText, renderEmailWrapperHtml, renderEmailWrapperText } from './shared.js';
+import {
+  renderItemsTableHtml,
+  renderItemsTableText,
+  renderEmailWrapperHtml,
+  renderEmailWrapperText,
+  renderOrderNumberHtml,
+  renderOrderNumberText,
+} from './shared.js';
 
 function firstName(name) {
   return (name || '').trim().split(/\s+/)[0] || 'there';
 }
 
-export function buildReceiptEmail({ name, items, total, sessionId }) {
-  const subject = 'Your receipt';
+export function buildReceiptEmail({ name, items, total, sessionId, orderNumber }) {
+  const subject = orderNumber ? `Your receipt — Order #${orderNumber}` : 'Your receipt';
   const greetingName = firstName(name);
   // items may include quote-only entries (a `note` instead of a charged amount) —
   // see stripeWebhook.js, which sources the full original cart from HubSpot rather
@@ -33,6 +40,7 @@ export function buildReceiptEmail({ name, items, total, sessionId }) {
 
   const html = renderEmailWrapperHtml(`
       <p>Hi ${escapeHtml(greetingName)},</p>
+      ${renderOrderNumberHtml(orderNumber)}
       <p>${intro}</p>
       ${paidHeadingHtml}
       ${renderItemsTableHtml(paidItems)}
@@ -40,7 +48,9 @@ export function buildReceiptEmail({ name, items, total, sessionId }) {
       ${unpaidSectionHtml}
       <p style="color:#666666;font-size:12px;margin-top:24px;">Reference: ${escapeHtml(sessionId)}</p>`);
 
-  const textLines = [`Hi ${greetingName},`, '', intro, ''];
+  const textLines = [`Hi ${greetingName},`, ''];
+  if (orderNumber) textLines.push(renderOrderNumberText(orderNumber), '');
+  textLines.push(intro, '');
   if (hasUnpaidItems) textLines.push('DEPOSIT PAID', '');
   textLines.push(renderItemsTableText(paidItems), '', `Total paid: ${formatCurrency(total)}`);
   if (hasUnpaidItems) {

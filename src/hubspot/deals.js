@@ -8,6 +8,8 @@ export async function createDeal({
   contactId,
   quoteItemsJson,
   depositStatus = DEPOSIT_STATUS.PENDING,
+  pipelineId,
+  stageId,
 }) {
   const deal = await hubspotClient.crm.deals.basicApi.create({
     properties: {
@@ -15,6 +17,11 @@ export async function createDeal({
       amount: String(amount),
       [DEAL_PROPERTIES.DEPOSIT_STATUS]: depositStatus,
       [DEAL_PROPERTIES.QUOTE_ITEMS_JSON]: quoteItemsJson,
+      // HubSpot's standard deal properties for pipeline placement. Omitted (not
+      // sent as empty/null) when the lookup in pipelines.js failed, so the deal
+      // falls back to the account's default pipeline instead of an invalid one.
+      ...(pipelineId ? { pipeline: pipelineId } : {}),
+      ...(stageId ? { dealstage: stageId } : {}),
     },
     associations: [
       {

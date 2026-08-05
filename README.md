@@ -33,6 +33,8 @@ Fill in `.env`:
 | `HUBSPOT_ACCESS_TOKEN` | HubSpot Service Key — see [Getting your HubSpot Service Key](#getting-your-hubspot-service-key) |
 | `RESEND_API_KEY` | Resend API key used to send quote/receipt emails — see [Getting your Resend API key](#getting-your-resend-api-key) |
 | `EMAIL_FROM` | "From" address for quote/receipt emails, e.g. `Zoom Rec <quotes@yourdomain.com>` — the domain must be verified in Resend |
+| `HUBSPOT_DEAL_PIPELINE` | Required. The exact label of the HubSpot deal pipeline new quotes should go into, e.g. `Sales Order Pipeline` — see [Sending deals into a specific pipeline](#sending-deals-into-a-specific-pipeline) |
+| `HUBSPOT_DEAL_STAGE` | Optional. The exact label of the stage within `HUBSPOT_DEAL_PIPELINE` new deals start in — defaults to that pipeline's first stage if unset |
 
 ### Getting your Stripe secret key
 
@@ -111,6 +113,30 @@ for new accounts, so skip anything with those names if you see them. The current
    - Contact: `quote_message`, `quote_page_url`, `device_info`
    - Deal: `deposit_status` (`pending`/`paid`/`expired`/`failed`/`no_deposit`),
      `stripe_checkout_session_id`, `quote_items_json`
+
+### Sending deals into a specific pipeline
+
+By default HubSpot puts every new deal in the account's default pipeline. To send this app's
+deals into a specific one instead (e.g. "Sales Order Pipeline"):
+
+1. In HubSpot, open the pipeline you want (**Settings → Objects → Deals → Pipelines**) and note
+   its exact label, and the exact label of whichever stage new deals should start in (or skip the
+   stage — it defaults to that pipeline's first stage).
+2. Set `HUBSPOT_DEAL_PIPELINE` in `.env` (or your host's environment variables) to that pipeline's
+   label, e.g. `Sales Order Pipeline` — must match exactly (case-insensitive, but otherwise exact).
+   Optionally set `HUBSPOT_DEAL_STAGE` the same way.
+3. No extra HubSpot scope is needed — resolving a pipeline/stage by label uses the same
+   `crm.objects.deals.write` scope already required above.
+
+Pipelines and stages are **portal-specific** — if this app talks to more than one HubSpot
+account (see [Getting your HubSpot Service Key](#getting-your-hubspot-service-key)), each
+deployment sets its own `HUBSPOT_DEAL_PIPELINE`/`HUBSPOT_DEAL_STAGE` matching that portal's own
+pipeline, since the same label can (and often will) resolve to a different id per account.
+
+If the configured label doesn't match any pipeline/stage in the connected portal (typo, wrong
+portal, pipeline renamed), this is logged as an error and the deal still gets created — just in
+the account's default pipeline instead, same fallback behavior as every other best-effort
+HubSpot step in this app.
 
 ### Getting your Resend API key
 
@@ -215,10 +241,14 @@ Response:
 
 Before creating the Stripe session, this endpoint also upserts a HubSpot Contact (by email) and
 creates an associated Deal with `deposit_status` set to `pending`, plus a **Note** on that deal
-listing every cart item in plain language (name, quantity, price or "price provided after
-review", and the total) — so a sales rep can open the deal and understand the request without
-reading `quote_items_json`'s raw JSON. If HubSpot is unreachable or misconfigured, all of this is
-logged and swallowed — the customer still gets a `checkoutUrl`.
+leading with the deal's own id ("Order #") and an "Order Type" line, then every cart item in
+plain language (name, quantity, price or "price provided after review"), and the total — so a
+sales rep can tell whether the customer chose the deposit route or the email-only route, and what
+they ordered, from the deal alone, without reading `quote_items_json`'s raw JSON. If HubSpot is
+unreachable or misconfigured, all of this is logged and swallowed — the customer still gets a
+`checkoutUrl`. The deal's id is also the "Order #" shown later in the payment receipt email (see
+[`POST /api/webhooks/stripe`](#post-apiwebhooksstripe) below) — the same number a rep sees on the
+deal is what the customer sees in their inbox.
 
 Rate-limited to 20 requests / 15 min per IP.
 
@@ -237,12 +267,13 @@ Response on success:
 { "ok": true }
 ```
 
-Sending the email is the point of this request, so it happens first — if it fails you get back a
-`502` (`{"error":"Unable to send quote email"}`) and nothing else happens (no HubSpot record is
-created, so HubSpot never implies an email went out that didn't). Once the email sends
-successfully, a HubSpot Contact + Deal is created the same way `/api/checkout` does, except
-`deposit_status` is `no_deposit` instead of `pending` — best-effort, same as `/api/checkout`, since
-the email has already gone out by that point either way.
+A HubSpot Contact + Deal is created first (best-effort, same as `/api/checkout`), except
+`deposit_status` is `no_deposit` instead of `pending` — same readable Note as `/api/checkout`
+too, so a rep sees "Order Type: Email Quote Only" at a glance. The deal is created *before* the
+email so the email can include the deal's id as an "Order #". If HubSpot is unreachable, this is
+logged and the email still goes out — just without an order number — rather than blocking the
+whole point of this route on a HubSpot outage. If the email send itself then fails, you get back
+a `502` (`{"error":"Unable to send quote email"}`).
 
 A duplicate submission (same email/total/item-count) within 5 minutes returns `{ "ok": true }`
 without re-sending — protects against a double-click resending the email or creating a second
@@ -267,7 +298,10 @@ the event:
 Either `paid`-triggering row above also sends the customer an automatic receipt email via
 Resend, to the email address Stripe collected at Checkout. This doesn't require subscribing to
 any additional Stripe event — the two events that trigger it were already required for the
-HubSpot sync above.
+HubSpot sync above. The receipt's subject and body include an "Order #" — the same HubSpot deal
+id shown on the deal's Note back at checkout time — so a customer referencing "Order #12345" on
+a call maps directly to that deal. Omitted (not a placeholder) if the original checkout-time
+HubSpot sync never attached a deal id to the session.
 
 The receipt shows the **entire original cart**, not just what got charged: it's built from the
 HubSpot deal's `quote_items_json` (the full cart, including any `price: 0` quote-only items that
@@ -289,10 +323,12 @@ to register this (both locally via the Stripe CLI, and in production via the Das
 npm test
 ```
 
-Runs unit tests for the pure validation logic (`parseQuoteItems`, `validateQuoteRequest`) using
-Node's built-in test runner — no extra dependency, no network calls. Covers `price: 0` acceptance,
-still-rejected cases (`null`, `NaN`, non-integers, negatives, `qty: 0`), and the per-route total
-minimum (`/api/checkout` vs. `/api/quote/email`). This doesn't cover Stripe/HubSpot/Resend
+Runs unit tests for the pure logic in this app (`parseQuoteItems`, `validateQuoteRequest`, the
+HubSpot pipeline/stage resolver, the HubSpot Note formatter, the email templates' order-number
+rendering) using Node's built-in test runner — no extra dependency, no network calls. Covers
+`price: 0` acceptance, still-rejected cases (`null`, `NaN`, non-integers, negatives, `qty: 0`),
+the per-route total minimum (`/api/checkout` vs. `/api/quote/email`), and that the Order #/Order
+Type lines render (or correctly omit themselves) as expected. This doesn't cover Stripe/HubSpot/Resend
 integration itself — use the manual curl/Postman flows below for that.
 
 ### Manual testing
@@ -403,12 +439,16 @@ fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a
    `npm run hubspot:setup` once more (locally, pointed at production's `HUBSPOT_ACCESS_TOKEN`) to
    backfill the new `no_deposit` option onto your existing `deposit_status` property — see step 6
    in [Getting your HubSpot Service Key](#getting-your-hubspot-service-key).
+7. Redeploying an app that was already live before pipeline routing existed? Add
+   `HUBSPOT_DEAL_PIPELINE` to that host's environment variables before redeploying — the server
+   now refuses to start without it (see
+   [Sending deals into a specific pipeline](#sending-deals-into-a-specific-pipeline)).
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 | --- | --- |
-| Server won't start, `Missing required environment variable: X` | `.env` is missing one of `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `WEBFLOW_SUCCESS_URL`, `WEBFLOW_CANCEL_URL`, `CORS_ORIGIN`, `HUBSPOT_ACCESS_TOKEN`, `RESEND_API_KEY`, `EMAIL_FROM` |
+| Server won't start, `Missing required environment variable: X` | `.env` is missing one of `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `WEBFLOW_SUCCESS_URL`, `WEBFLOW_CANCEL_URL`, `CORS_ORIGIN`, `HUBSPOT_ACCESS_TOKEN`, `RESEND_API_KEY`, `EMAIL_FROM`, `HUBSPOT_DEAL_PIPELINE` |
 | Server won't start, `EMAIL_FROM must be an email address or "Name <email@domain.com>"` | `EMAIL_FROM` doesn't match either accepted format — fix the value in `.env` |
 | Browser console shows a CORS error | The page's origin isn't in `CORS_ORIGIN` (must match exactly, including `https://` and no trailing slash) |
 | `{"error":"Unable to create checkout session"}` | Check the server logs — usually an invalid/placeholder `STRIPE_SECRET_KEY` |
@@ -422,6 +462,7 @@ fail with a Stripe authentication error. Likewise, `/api/quote/email` requires a
 | Webhook returns `Webhook Error: ...` (400) | `STRIPE_WEBHOOK_SECRET` doesn't match the endpoint's signing secret in the Stripe Dashboard, or the request body was altered (e.g. by a proxy re-encoding JSON) before reaching Express |
 | HubSpot sync silently does nothing | `HUBSPOT_ACCESS_TOKEN` is invalid/expired, lacks the required scopes, or `npm run hubspot:setup` was never run — check server logs, errors there don't fail the checkout/quote-email request |
 | Deal is created but has no cart-details Note | Check server logs for `Failed to create quote-details note` and the HubSpot error beneath it — the deal itself still gets created either way, since note creation is best-effort |
+| Deal lands in the wrong pipeline | Check server logs for `Failed to resolve HubSpot deal pipeline/stage` — `HUBSPOT_DEAL_PIPELINE`/`HUBSPOT_DEAL_STAGE` doesn't exactly match a pipeline/stage label in the connected portal (see [Sending deals into a specific pipeline](#sending-deals-into-a-specific-pipeline)); the deal still gets created, just in the account's default pipeline |
 
 ## Webflow frontend
 
@@ -667,9 +708,11 @@ navigates away from the page.
   `no_deposit` (set by `/api/quote/email` when the customer chose to get the quote emailed
   instead of paying now).
 - Every deal also gets a **Note** (see [`src/hubspot/formatQuoteNote.js`](src/hubspot/formatQuoteNote.js))
-  listing the cart in plain language for sales — `quote_items_json` remains the machine-readable
-  source of truth the receipt email is built from, the Note is a human-readable summary of the
-  same data, not a second copy of record.
+  leading with "Order #" (the deal's own id) and "Order Type" (Deposit vs. Email Quote Only), then
+  the cart in plain language for sales — `quote_items_json` remains the machine-readable source of
+  truth the receipt email is built from, the Note is a human-readable summary of the same data, not
+  a second copy of record. The same deal id shows up as the customer-facing "Order #" in both the
+  quote email and the payment receipt.
 - Email deliverability for both `/api/quote/email` and the payment receipt depends entirely on
   `EMAIL_FROM`'s domain being verified in Resend — an unverified domain will fail sends outright,
   and even a verified one can still land in spam without properly configured SPF/DKIM (which
